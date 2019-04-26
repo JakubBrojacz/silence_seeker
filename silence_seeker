@@ -1,0 +1,127 @@
+#!/bin/bash
+
+declare -A config # init array
+config=( # set default values in config array
+    [SIGNAL_DROPPING_DURATION]="10"
+    [SILENCE_TRESHOLD]="10"
+	[SLICE_DURATION]="10"
+	[MIN_SIGNAL_ALLOWING_DROPDOWN]="100"
+)
+
+while read line
+do
+    if echo $line | grep -F = &>/dev/null
+    then
+        varname=$(echo "$line" | cut -d '=' -f 1)
+		varvalue=$(echo "$line" | cut -d '=' -f 2-)
+		if [[ $varvalue =~ ^[0-9]+$ ]]; then
+			config[$varname]=$varvalue
+		else
+			echo "$varvalue is not a number" 
+			exit 1
+		fi
+    fi
+done < ${0}.config
+
+for var in "$@"
+do
+ACT_FILE="$var"
+
+python.exe << PYTHON_CODE_END
+import matplotlib.pyplot as plt
+import numpy as np
+import wave
+import sys
+
+
+#get variables from config file
+slice_len = ${config[SLICE_DURATION]}
+drop_len = ${config[SIGNAL_DROPPING_DURATION]}
+offset = drop_len
+silence_treshold = ${config[SILENCE_TRESHOLD]}
+normal_signal_treshold = ${config[MIN_SIGNAL_ALLOWING_DROPDOWN]}
+filename = '${ACT_FILE}'
+
+
+#open wav file
+try:
+    spf = wave.open(filename,'rb')
+except:
+    print(filename+' is not a valid wav file')
+    exit(1)
+signal = spf.readframes(-1)
+signal = np.frombuffer(signal, dtype='int16')
+
+
+#ignore too short silence fragments
+signal_sliced = abs(signal[0:-slice_len])
+for i in range(slice_len):
+    signal_sliced = np.maximum(signal_sliced,abs(signal[i:-slice_len+i]))
+
+
+#visualization when signal drop found
+def visualize_signal_drop(id1,id2):
+    plt.figure(1)
+    plt.subplot(2,1,1)
+    plt.title('Signal Wave')
+    plt.plot(signal)
+
+    plt.subplot(2,1,2)
+    plt.title('Around Signal Drop')
+    margin = id2-id1
+    plt.plot(signal[id1-margin:id2+margin])
+	
+    plt.savefig(filename+'.png')
+    #plt.show()
+
+
+#visualization when signal drop not found():
+def visualize_signal():
+    plt.figure(1)
+    plt.title('Signal Wave')
+    plt.plot(signal)
+	
+    plt.savefig(filename+'.png')
+    #plt.show()
+
+
+#auxiliary function
+def check_for_signal_above_normal_signal_treshold_before(index):
+    for j in range(drop_len):
+        if signal_sliced[index-j]>normal_signal_treshold:
+            return index-j
+    return 0
+
+
+#iterate through all samples, detect silence
+during_silence = False
+if signal_sliced[offset]<silence_treshold:
+    during_silence = True
+unexpected_silence_start = -1
+for id in range(len(signal_sliced)-2*offset):
+    index = id+offset
+    if during_silence:
+        if signal_sliced[index]>silence_treshold:
+            #check for rapid signal increase
+            if check_for_signal_above_normal_signal_treshold_before(index+drop_len-1):
+                #print(f'rapid decrease:{index}') #index close to rapid signal decrease
+                if unexpected_silence_start >= 0:
+                    print(f'{filename} invalid {unexpected_silence_start}')
+                    visualize_signal_drop(unexpected_silence_start,index)
+                    break
+            during_silence = False
+    elif signal_sliced[index]<silence_treshold and not during_silence:
+        #check for rapid signal decrease
+        tmp = check_for_signal_above_normal_signal_treshold_before(index)
+        if tmp>0:
+            unexpected_silence_start = tmp
+            #print(f'rapid increase:{tmp}') #index of rapid signal inrease
+        during_silence = True
+else:
+	#unexpected silence not found
+    print(f'{filename} valid')
+    visualize_signal()
+
+PYTHON_CODE_END
+
+done
