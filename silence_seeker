@@ -27,7 +27,7 @@ for var in "$@"
 do
 ACT_FILE="$var"
 
-python.exe << PYTHON_CODE_END
+python3 << PYTHON_CODE_END
 import matplotlib.pyplot as plt
 import numpy as np
 import wave
